@@ -48,6 +48,7 @@ import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.NonNullList;
 import net.minecraft.network.chat.Component;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
@@ -71,6 +72,11 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
     private ElytraBehavior behavior;
     private boolean predictingTerrain;
 
+    // Overworld elytra mode (fly above build limit, no NetherPathfinder needed)
+    private boolean overworldMode;
+    private int overworldFireworkCooldown;
+    private BetterBlockPos overworldDestination;
+
     @Override
     public void onLostControl() {
         this.state = State.START_FLYING; // TODO: null state?
@@ -78,6 +84,9 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
         this.landingSpot = null;
         this.reachedGoal = false;
         this.goal = null;
+        this.overworldMode = false;
+        this.overworldFireworkCooldown = 0;
+        this.overworldDestination = null;
         destroyBehaviorAsync();
     }
 
@@ -94,7 +103,7 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
 
     @Override
     public boolean isActive() {
-        return this.behavior != null;
+        return this.behavior != null || this.overworldMode;
     }
 
     @Override
@@ -111,6 +120,9 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
 
     @Override
     public PathingCommand onTick(boolean calcFailed, boolean isSafeToCancel) {
+        if (this.overworldMode) {
+            return onTickOverworld();
+        }
         final long seedSetting = Baritone.settings().elytraNetherSeed.value;
         if (seedSetting != this.behavior.context.getSeed()) {
             logDirect("Nether seed changed, recalculating path");
@@ -285,6 +297,157 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
         return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
     }
 
+    private PathingCommand onTickOverworld() {
+        final int flightY = ctx.world().getMaxBuildHeight() + 10;
+
+        if (ctx.player().isFallFlying() && this.state != State.LANDING && shouldLandForSafety()) {
+            if (Baritone.settings().elytraAllowEmergencyLand.value) {
+                logDirect("Emergency landing - low elytra durability or fireworks");
+                this.state = State.LANDING;
+                this.goingToLandingSpot = false;
+            }
+        }
+
+        if (this.state == State.OVERWORLD_JUMP) {
+            if (ctx.player().onGround()) {
+                baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
+                this.state = State.OVERWORLD_ACTIVATE;
+            }
+            return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+        }
+
+        if (this.state == State.OVERWORLD_ACTIVATE) {
+            if (ctx.player().isFallFlying()) {
+                this.state = State.OVERWORLD_CLIMB;
+            } else if (ctx.player().onGround()) {
+                this.state = State.OVERWORLD_JUMP;
+            } else {
+                // Airborne — press jump to activate elytra glide
+                baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
+            }
+            return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+        }
+
+        if (this.state == State.OVERWORLD_CLIMB) {
+            if (!ctx.player().isFallFlying()) {
+                this.state = ctx.player().onGround() ? State.OVERWORLD_JUMP : State.OVERWORLD_ACTIVATE;
+                return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+            }
+            if (ctx.player().position().y >= flightY) {
+                logDirect("Reached altitude, flying to destination...");
+                this.state = State.FLYING;
+                return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+            }
+            // Look straight up and burn fireworks to climb
+            baritone.getInputOverrideHandler().clearAllKeys();
+            baritone.getLookBehavior().updateTarget(new Rotation(ctx.playerRotations().getYaw(), -90f), false);
+            useOverworldFirework(true);
+            return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+        }
+
+        if (this.state == State.FLYING) {
+            if (!ctx.player().isFallFlying()) {
+                if (ctx.player().onGround()) {
+                    logDirect("Landed unexpectedly, relaunching...");
+                    this.state = State.OVERWORLD_JUMP;
+                }
+                return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+            }
+
+            final Vec3 playerPos = ctx.player().position();
+            final double distXZ = Math.sqrt(
+                    Math.pow(playerPos.x - (overworldDestination.x + 0.5), 2) +
+                    Math.pow(playerPos.z - (overworldDestination.z + 0.5), 2)
+            );
+
+            if (distXZ < 30.0 && !this.goingToLandingSpot) {
+                logDirect("Approaching destination, searching for landing spot...");
+                final BetterBlockPos searchStart = new BetterBlockPos(
+                        overworldDestination.x,
+                        Math.min(ctx.playerFeet().getY(), ctx.world().getMaxBuildHeight() - 1),
+                        overworldDestination.z
+                );
+                final BetterBlockPos ls = findSafeLandingSpot(searchStart);
+                if (ls != null) {
+                    this.landingSpot = ls;
+                    this.goingToLandingSpot = true;
+                    this.state = State.LANDING;
+                    logDirect("Landing spot found, descending...");
+                }
+                // if no spot found yet, keep flying and try next tick
+            }
+
+            if (this.state != State.FLYING) {
+                return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+            }
+
+            // Aim toward destination with a slight downward pitch to maintain forward speed
+            baritone.getInputOverrideHandler().clearAllKeys();
+            final Vec3 to = new Vec3(overworldDestination.x + 0.5, playerPos.y - 2, overworldDestination.z + 0.5);
+            baritone.getLookBehavior().updateTarget(
+                    RotationUtils.calcRotationFromVec3d(playerPos, to, ctx.playerRotations()), false);
+            useOverworldFirework(false);
+            return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+        }
+
+        if (this.state == State.LANDING) {
+            final BetterBlockPos endPos = this.landingSpot != null ? this.landingSpot
+                    : new BetterBlockPos(overworldDestination.x, ctx.playerFeet().getY(), overworldDestination.z);
+
+            if (!ctx.player().isFallFlying()) {
+                if (ctx.playerMotion().multiply(1, 0, 1).length() > 0.001) {
+                    baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, true);
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
+                logDirect("Done :)");
+                baritone.getInputOverrideHandler().clearAllKeys();
+                this.onLostControl();
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
+
+            baritone.getInputOverrideHandler().clearAllKeys();
+            final Vec3 from = ctx.player().position();
+
+            // Pitch down when still high above landing spot, level out when close
+            final float pitch = from.y > endPos.getY() + 20
+                    ? RotationUtils.calcRotationFromVec3d(from,
+                            new Vec3(endPos.x + 0.5, endPos.getY(), endPos.z + 0.5),
+                            ctx.playerRotations()).getPitch()
+                    : 0f;
+
+            final Vec3 toHoriz = new Vec3(endPos.x + 0.5, from.y, endPos.z + 0.5);
+            baritone.getLookBehavior().updateTarget(
+                    new Rotation(RotationUtils.calcRotationFromVec3d(from, toHoriz, ctx.playerRotations()).getYaw(), pitch), false);
+
+            if (from.y < endPos.getY() - LANDING_COLUMN_HEIGHT) {
+                logDirect("Bad landing spot, searching again...");
+                badLandingSpots.add(endPos);
+                this.goingToLandingSpot = false;
+                this.landingSpot = null;
+                this.state = State.FLYING;
+            }
+            return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+        }
+
+        return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+    }
+
+    private void useOverworldFirework(boolean force) {
+        if (overworldFireworkCooldown > 0) {
+            overworldFireworkCooldown--;
+            return;
+        }
+        final double speedSqr = ctx.player().getDeltaMovement().lengthSqr();
+        final double targetSpeed = Baritone.settings().elytraFireworkSpeed.value;
+        if (force || speedSqr < targetSpeed * targetSpeed) {
+            if (baritone.getInventoryBehavior().throwaway(true, ElytraBehavior::isBoostingFireworks)
+                    || baritone.getInventoryBehavior().throwaway(true, ElytraBehavior::isFireworks)) {
+                ctx.playerController().processRightClick(ctx.player(), ctx.world(), InteractionHand.MAIN_HAND);
+                overworldFireworkCooldown = 10;
+            }
+        }
+    }
+
     public void landingSpotIsBad(BetterBlockPos endPos) {
         badLandingSpots.add(endPos);
         goingToLandingSpot = false;
@@ -319,7 +482,9 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
 
     @Override
     public BlockPos currentDestination() {
-        return this.behavior != null ? this.behavior.destination : null;
+        if (this.behavior != null) return this.behavior.destination;
+        if (this.overworldMode) return this.overworldDestination;
+        return null;
     }
 
     @Override
@@ -328,16 +493,29 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
     }
 
     private void pathTo0(BlockPos destination, boolean appendDestination) {
-        if (ctx.player() == null || ctx.player().level().dimension() != Level.NETHER) {
+        if (ctx.player() == null) {
             return;
         }
-        this.onLostControl();
-        this.predictingTerrain = Baritone.settings().elytraPredictTerrain.value;
-        this.behavior = new ElytraBehavior(this.baritone, this, destination, appendDestination);
-        if (ctx.world() != null) {
-            this.behavior.repackChunks();
+        if (ctx.player().level().dimension() == Level.NETHER) {
+            this.onLostControl();
+            this.predictingTerrain = Baritone.settings().elytraPredictTerrain.value;
+            this.behavior = new ElytraBehavior(this.baritone, this, destination, appendDestination);
+            if (ctx.world() != null) {
+                this.behavior.repackChunks();
+            }
+            this.behavior.pathTo();
+        } else {
+            ItemStack chest = ctx.player().getItemBySlot(EquipmentSlot.CHEST);
+            if (chest.getItem() != Items.ELYTRA) {
+                logDirect("No elytra equipped!");
+                return;
+            }
+            this.onLostControl();
+            this.overworldMode = true;
+            this.overworldDestination = new BetterBlockPos(destination);
+            this.state = State.OVERWORLD_JUMP;
+            logDirect("Overworld elytra: double-jumping to launch, then climbing above build limit");
         }
-        this.behavior.pathTo();
     }
 
     @Override
@@ -358,8 +536,10 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
         } else {
             throw new IllegalArgumentException("The goal must be a GoalXZ or GoalBlock");
         }
-        if (y <= 0 || y >= 128) {
-            throw new IllegalArgumentException("The y of the goal is not between 0 and 128");
+        if (ctx.player() != null && ctx.player().level().dimension() == Level.NETHER) {
+            if (y <= 0 || y >= 128) {
+                throw new IllegalArgumentException("The y of the goal is not between 0 and 128");
+            }
         }
         this.pathTo(new BlockPos(x, y, z));
     }
@@ -391,7 +571,8 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
 
     @Override
     public boolean isSafeToCancel() {
-        return !this.isActive() || !(this.state == State.FLYING || this.state == State.START_FLYING);
+        return !this.isActive() || !(this.state == State.FLYING || this.state == State.START_FLYING
+                || this.state == State.OVERWORLD_ACTIVATE || this.state == State.OVERWORLD_CLIMB);
     }
 
     public enum State {
@@ -400,7 +581,10 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
         GET_TO_JUMP("Walking to takeoff"),
         START_FLYING("Begin flying"),
         FLYING("Flying"),
-        LANDING("Landing");
+        LANDING("Landing"),
+        OVERWORLD_JUMP("Jumping to launch"),
+        OVERWORLD_ACTIVATE("Activating elytra"),
+        OVERWORLD_CLIMB("Climbing to altitude");
 
         public final String description;
 
@@ -471,11 +655,23 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
         }
     }
 
-    private static boolean isInBounds(BlockPos pos) {
-        return pos.getY() >= 0 && pos.getY() < 128;
+    private boolean isInBounds(BlockPos pos) {
+        if (ctx.world() == null) return false;
+        return pos.getY() >= ctx.world().getMinBuildHeight() && pos.getY() < ctx.world().getMaxBuildHeight();
     }
 
     private boolean isSafeBlock(Block block) {
+        if (this.overworldMode) {
+            // Accept any solid block except ones that damage on contact
+            return !(block instanceof AirBlock)
+                    && block != Blocks.LAVA
+                    && block != Blocks.FIRE
+                    && block != Blocks.SOUL_FIRE
+                    && block != Blocks.MAGMA_BLOCK
+                    && block != Blocks.SWEET_BERRY_BUSH
+                    && block != Blocks.CACTUS
+                    && block != Blocks.WITHER_ROSE;
+        }
         return block == Blocks.NETHERRACK || block == Blocks.GRAVEL || (block == Blocks.NETHER_BRICKS && Baritone.settings().elytraAllowLandOnNetherFortress.value);
     }
 
@@ -484,6 +680,9 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
     }
 
     private boolean isAtEdge(BlockPos pos) {
+        if (this.overworldMode) {
+            return false; // any solid surface is fine in the overworld
+        }
         return !isSafeBlock(pos.north())
                 || !isSafeBlock(pos.south())
                 || !isSafeBlock(pos.east())
@@ -538,7 +737,7 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
                     return new BetterBlockPos(mut);
                 }
                 return null;
-            } else if (block != Blocks.AIR) {
+            } else if (!(block instanceof AirBlock)) {
                 return null;
             }
             mut.set(mut.getX(), mut.getY() - 1, mut.getZ());
@@ -557,7 +756,7 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
 
         while (!queue.isEmpty()) {
             BetterBlockPos pos = queue.poll();
-            if (ctx.world().isLoaded(pos) && isInBounds(pos) && ctx.world().getBlockState(pos).getBlock() == Blocks.AIR) {
+            if (ctx.world().isLoaded(pos) && isInBounds(pos) && ctx.world().getBlockState(pos).getBlock() instanceof AirBlock) {
                 BetterBlockPos actualLandingSpot = checkLandingSpot(pos, checkedPositions);
                 if (actualLandingSpot != null && isColumnAir(actualLandingSpot, LANDING_COLUMN_HEIGHT) && hasAirBubble(actualLandingSpot.above(LANDING_COLUMN_HEIGHT)) && !badLandingSpots.contains(actualLandingSpot.above(LANDING_COLUMN_HEIGHT))) {
                     return actualLandingSpot.above(LANDING_COLUMN_HEIGHT);
