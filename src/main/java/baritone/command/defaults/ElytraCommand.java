@@ -200,7 +200,7 @@ public class ElytraCommand extends Command {
         return Arrays.asList(
                 "The elytra command tells baritone to automatically fly to the current goal.",
                 "In the Nether, it uses NetherPathfinder to navigate through obstacles.",
-                "In the Overworld (and other dimensions), it double-jumps to activate elytra, climbs above the build limit where there are no obstacles, then flies in a straight line to the destination.",
+                "In the Overworld (and other dimensions), jump to activate your elytra, then Baritone climbs above the build limit where there are no obstacles and flies in a straight line to the destination.",
                 "",
                 "Usage:",
                 "> elytra - fly to the current goal",

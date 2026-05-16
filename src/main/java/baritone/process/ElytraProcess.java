@@ -308,29 +308,20 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
             }
         }
 
-        if (this.state == State.OVERWORLD_JUMP) {
-            if (ctx.player().onGround()) {
-                baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
-                this.state = State.OVERWORLD_ACTIVATE;
-            }
-            return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
-        }
-
         if (this.state == State.OVERWORLD_ACTIVATE) {
             if (ctx.player().isFallFlying()) {
                 this.state = State.OVERWORLD_CLIMB;
-            } else if (ctx.player().onGround()) {
-                this.state = State.OVERWORLD_JUMP;
-            } else {
-                // Airborne — press jump to activate elytra glide
+            } else if (!ctx.player().onGround()) {
+                // Airborne — press jump to activate elytra
                 baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
             }
+            // On ground: wait for player to jump
             return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
         }
 
         if (this.state == State.OVERWORLD_CLIMB) {
             if (!ctx.player().isFallFlying()) {
-                this.state = ctx.player().onGround() ? State.OVERWORLD_JUMP : State.OVERWORLD_ACTIVATE;
+                this.state = State.OVERWORLD_ACTIVATE;
                 return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
             }
             if (ctx.player().position().y >= flightY) {
@@ -348,8 +339,8 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
         if (this.state == State.FLYING) {
             if (!ctx.player().isFallFlying()) {
                 if (ctx.player().onGround()) {
-                    logDirect("Landed unexpectedly, relaunching...");
-                    this.state = State.OVERWORLD_JUMP;
+                    logDirect("Landed unexpectedly — jump to reactivate elytra");
+                    this.state = State.OVERWORLD_ACTIVATE;
                 }
                 return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
             }
@@ -512,8 +503,8 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
             this.onLostControl();
             this.overworldMode = true;
             this.overworldDestination = new BetterBlockPos(destination);
-            this.state = State.OVERWORLD_JUMP;
-            logDirect("Overworld elytra: double-jumping to launch, then climbing above build limit");
+            this.state = State.OVERWORLD_ACTIVATE;
+            logDirect("Overworld elytra: jump to activate elytra, then Baritone will climb above build limit");
         }
     }
 
@@ -571,7 +562,7 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
     @Override
     public boolean isSafeToCancel() {
         return !this.isActive() || !(this.state == State.FLYING || this.state == State.START_FLYING
-                || this.state == State.OVERWORLD_ACTIVATE || this.state == State.OVERWORLD_CLIMB);
+                || this.state == State.OVERWORLD_CLIMB);
     }
 
     public enum State {
@@ -581,8 +572,7 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
         START_FLYING("Begin flying"),
         FLYING("Flying"),
         LANDING("Landing"),
-        OVERWORLD_JUMP("Jumping to launch"),
-        OVERWORLD_ACTIVATE("Activating elytra"),
+        OVERWORLD_ACTIVATE("Waiting for elytra activation"),
         OVERWORLD_CLIMB("Climbing to altitude");
 
         public final String description;
