@@ -1,0 +1,58 @@
+name: Release 1.21.10
+
+on:
+  push:
+    branches:
+      - '1.21.10'
+
+concurrency:
+  group: release-1.21.10
+  cancel-in-progress: true
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build
+        run: ./gradlew build -Pmod_version="1.21.10-build.${{ github.run_number }}"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v1.21.10-build.${{ github.run_number }}"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git tag "$TAG" -m "Baritone 1.21.10 build ${{ github.run_number }}"
+          git push origin "$TAG"
+          gh release create "$TAG" dist/* \
+            --title "Baritone 1.21.10 (Build ${{ github.run_number }})" \
+            --notes "## Baritone 1.21.10 with Overworld Elytra Support
+
+Drop the JAR into your mods folder.
+
+### What's new
+- **Overworld elytra now works.** Set a goal, run \`#elytra\`, and Baritone will:
+  1. Double-jump to activate the elytra
+  2. Fly straight up above the build limit (no obstacles there)
+  3. Cruise in a straight line to the destination
+  4. Descend and land automatically
+- All non-damaging solid blocks are valid landing surfaces (no longer limited to netherrack/gravel)
+- Nether elytra behaviour is unchanged"
