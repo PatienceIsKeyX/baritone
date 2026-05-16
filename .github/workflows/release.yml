@@ -33,35 +33,25 @@ jobs:
       - name: Build
         run: ./gradlew build -Pmod_version="1.21.10-build.${{ github.run_number }}"
 
-      - name: Create GitHub Release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -e
-          TAG="v1.21.10-build.${{ github.run_number }}"
+      - name: List dist
+        run: ls -la dist/
 
-          # Embed token in remote URL so git push works inside Actions
-          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git config user.name "github-actions[bot]"
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.21.10-build.${{ github.run_number }}
+          name: Baritone 1.21.10 (Build ${{ github.run_number }})
+          files: dist/*.jar
+          body: |
+            ## Baritone 1.21.10 with Overworld Elytra Support
 
-          git tag "$TAG" -m "Baritone 1.21.10 build ${{ github.run_number }}"
-          git push origin "$TAG"
+            Drop the JAR into your mods folder.
 
-          echo "--- dist contents ---"
-          ls -la dist/
-
-          gh release create "$TAG" dist/*.jar \
-            --title "Baritone 1.21.10 (Build ${{ github.run_number }})" \
-            --notes "## Baritone 1.21.10 with Overworld Elytra Support
-
-Drop the JAR into your mods folder.
-
-### What's new
-- **Overworld elytra now works.** Set a goal, run \`#elytra\`, and Baritone will:
-  1. Double-jump to activate the elytra
-  2. Fly straight up above the build limit (no obstacles there)
-  3. Cruise in a straight line to the destination
-  4. Descend and land automatically
-- All non-damaging solid blocks are valid landing surfaces (no longer limited to netherrack/gravel)
-- Nether elytra behaviour is unchanged"
+            ### What's new
+            - **Overworld elytra now works.** Set a goal, run `#elytra`, and Baritone will:
+              1. Double-jump to activate the elytra
+              2. Fly straight up above the build limit (no obstacles there)
+              3. Cruise in a straight line to the destination
+              4. Descend and land automatically
+            - All non-damaging solid blocks are valid landing surfaces
+            - Nether elytra behaviour is unchanged
