@@ -298,7 +298,7 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
     }
 
     private PathingCommand onTickOverworld() {
-        final int flightY = ctx.world().getMaxBuildHeight() + 10;
+        final int flightY = 330; // overworld build limit (320) + 10
 
         if (ctx.player().isFallFlying() && this.state != State.LANDING && shouldLandForSafety()) {
             if (Baritone.settings().elytraAllowEmergencyLand.value) {
@@ -364,7 +364,7 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
                 logDirect("Approaching destination, searching for landing spot...");
                 final BetterBlockPos searchStart = new BetterBlockPos(
                         overworldDestination.x,
-                        Math.min(ctx.playerFeet().getY(), ctx.world().getMaxBuildHeight() - 1),
+                        Math.min(ctx.playerFeet().getY(), 319),
                         overworldDestination.z
                 );
                 final BetterBlockPos ls = findSafeLandingSpot(searchStart);
@@ -440,8 +440,7 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
         final double speedSqr = ctx.player().getDeltaMovement().lengthSqr();
         final double targetSpeed = Baritone.settings().elytraFireworkSpeed.value;
         if (force || speedSqr < targetSpeed * targetSpeed) {
-            if (baritone.getInventoryBehavior().throwaway(true, ElytraBehavior::isBoostingFireworks)
-                    || baritone.getInventoryBehavior().throwaway(true, ElytraBehavior::isFireworks)) {
+            if (baritone.getInventoryBehavior().throwaway(true, ElytraBehavior::isFireworks)) {
                 ctx.playerController().processRightClick(ctx.player(), ctx.world(), InteractionHand.MAIN_HAND);
                 overworldFireworkCooldown = 10;
             }
@@ -657,7 +656,7 @@ public class ElytraProcess extends BaritoneProcessHelper implements IBaritonePro
 
     private boolean isInBounds(BlockPos pos) {
         if (ctx.world() == null) return false;
-        return pos.getY() >= ctx.world().getMinBuildHeight() && pos.getY() < ctx.world().getMaxBuildHeight();
+        return pos.getY() >= -64 && pos.getY() < 320;
     }
 
     private boolean isSafeBlock(Block block) {
