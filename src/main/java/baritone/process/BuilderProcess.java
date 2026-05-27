@@ -61,8 +61,9 @@ import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.phys.shapes.VoxelShape;
 
-import java.io.File;
-import java.io.FileInputStream;
+import java.io.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -85,6 +86,8 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
     private ISchematic realSchematic;
     private ISchematic schematic;
     private Vec3i origin;
+    private Vec3i rawOrigin;
+    private File sourceFile;
     private int ticks;
     private boolean paused;
     private int layer;
@@ -185,8 +188,48 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
             return false;
         }
         ISchematic schem = applyMapArtAndSelection(origin, parsed);
+        this.sourceFile = schematic;
+        this.rawOrigin = origin;
         build(name, schem, origin);
         return true;
+    }
+
+    private static final long PLACEMENT_MAGIC = 0x736368656D617469L;
+
+    public void savePlacement(Path dir) {
+        Path file = dir.resolve("schematic_placement.dat");
+        if (sourceFile == null || rawOrigin == null) {
+            try { Files.deleteIfExists(file); } catch (IOException ignored) {}
+            return;
+        }
+        try (DataOutputStream out = new DataOutputStream(new BufferedOutputStream(Files.newOutputStream(file)))) {
+            out.writeLong(PLACEMENT_MAGIC);
+            out.writeUTF(sourceFile.getAbsolutePath());
+            out.writeInt(rawOrigin.getX());
+            out.writeInt(rawOrigin.getY());
+            out.writeInt(rawOrigin.getZ());
+            out.writeInt(layer);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public void loadPlacement(Path dir) {
+        Path file = dir.resolve("schematic_placement.dat");
+        if (!Files.exists(file)) return;
+        try (DataInputStream in = new DataInputStream(new BufferedInputStream(Files.newInputStream(file)))) {
+            if (in.readLong() != PLACEMENT_MAGIC) return;
+            String path = in.readUTF();
+            int x = in.readInt(), y = in.readInt(), z = in.readInt();
+            int savedLayer = in.readInt();
+            File schematicFile = new File(path);
+            if (!schematicFile.exists()) return;
+            if (build(schematicFile.getName(), schematicFile, new Vec3i(x, y, z))) {
+                this.layer = savedLayer;
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
     }
 
     private ISchematic applyMapArtAndSelection(Vec3i origin, IStaticSchematic parsed) {
@@ -975,6 +1018,8 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
         name = null;
         schematic = null;
         realSchematic = null;
+        sourceFile = null;
+        rawOrigin = null;
         layer = Baritone.settings().startAtLayer.value;
         numRepeats = 0;
         paused = false;

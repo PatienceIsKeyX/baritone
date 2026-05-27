@@ -96,11 +96,16 @@ public class WorldProvider implements IWorldProvider {
                 this.currentWorld = worldCache.computeIfAbsent(worldDataDir, d -> new WorldData(d, world.dimensionType()));
             }
             this.mcWorld = ctx.world();
+            baritone.getSelectionManager().load(worldDataDir);
+            baritone.getBuilderProcess().loadPlacement(worldDataDir);
         });
     }
 
     public final void closeWorld() {
         WorldData world = this.currentWorld;
+        if (world != null) {
+            baritone.getBuilderProcess().savePlacement(world.directory);
+        }
         this.currentWorld = null;
         this.mcWorld = null;
         if (world == null) {
